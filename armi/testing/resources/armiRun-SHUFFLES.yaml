@@ -1,0 +1,21 @@
+sequence:
+  1: &cycle_1
+    - &shuffle_1_9_45
+      cascade: ["igniter fuel", "009-045", "008-004", "007-001", "006-005"]
+      fuelEnrichment: [0, 0.12, 0.14, 0.15, 0]
+    - extraRotations: {"009-045": 60}
+    - &shuffle_1_4_4
+      cascade: ["middle fuel", "004-004", "005-005", "006-006", "Delete"]
+      fuelEnrichment: [0, 0.12, 0.14, 0.15, 0]
+  2:
+    - *shuffle_1_9_45
+    - *shuffle_1_4_4
+    - extraRotations: {"009-045": 60}
+    - cascade: ["SFP", "005-003", "SFP"]
+      ringPosCycle: [6, 5, 0]
+  3:
+    - *shuffle_1_9_45
+    - swap: ["009-045", "008-004"]
+    - swap: ["007-001", "006-005"]
+    - cascade: ["SFP", "002-002", "SFP"]
+      ringPosCycle: [5, 3, 1]

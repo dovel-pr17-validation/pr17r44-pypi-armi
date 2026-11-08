@@ -1,0 +1,46 @@
+metadata:
+  version: uncontrolled
+settings:
+# global
+  Tin: 20.0
+  Tout: 20.0
+  buGroups:
+    - 100
+  burnSteps: 0
+  comment: ZPPR test case
+  cycleLength: 365.25
+  loadingFile: zpprTestGeom.yaml
+  nTasks: 12
+  outputFileExtension: pdf
+  power: 75000000.0
+  sortReactor: false # zpprs dont sor the right way. need better component sorting for slab...
+  verbosity: extra
+
+# cross section
+  crossSectionControl:
+    AA:
+      geometry: 1D slab
+      externalDriver: true
+      useHomogenizedBlockComposition: false
+      numInternalRings: 1
+      numExternalRings: 1
+      meshSubdivisionsPerCm: 10
+    AC:
+      geometry: 1D slab
+      externalDriver: true
+      useHomogenizedBlockComposition: false
+      numInternalRings: 1
+      numExternalRings: 1
+      meshSubdivisionsPerCm: 10
+    AZ:
+      geometry: 1D slab
+      externalDriver: true
+      useHomogenizedBlockComposition: false
+      numInternalRings: 1
+      numExternalRings: 1
+      meshSubdivisionsPerCm: 10
+
+# neutronics
+  epsEig: 1e-10
+  genXS: Neutron
+  xsBlockRepresentation: ComponentAverage1DSlab

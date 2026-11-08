@@ -1,0 +1,27 @@
+settings:
+# global
+  beta: 0.003454
+  buGroups:
+    - 100
+  burnSteps: 0
+  comment: Full-core Cartesian input file with a 10x10 cm square pitch.
+  cycleLength: 2000.0
+  freshFeedType: igniter fuel
+  loadingFile: refSmallCartesian.yaml
+  outputFileExtension: png
+  power: 400000000.0
+  startNode: 1
+  targetK: 1.002
+  versions:
+    armi: uncontrolled
+
+# fuel cycle
+  jumpRingNum: 9
+
+# neutronics
+  epsFSAvg: 1e-06
+  epsFSPoint: 1e-06
+  loadPadElevation: 200.0
+
+# report
+  summarizeAssemDesign: false

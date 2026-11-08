@@ -1,0 +1,199 @@
+# Copyright 2026 TerraPower, LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""How matProps defines a material class."""
+
+import hashlib
+from pathlib import Path
+
+from ruamel.yaml import YAML
+
+from armi.matProps import prop
+from armi.matProps.constituent import Constituent
+from armi.matProps.function import Function
+from armi.matProps.materialType import MaterialType
+
+
+class MatPropsMaterial:
+    """
+    The MatPropsMaterial class is a generic container for all material types, whether they contain ASME properties,
+    fluid properties, or steel properties.
+
+    It may be necessary to have multiple MatPropsMaterial definitions for a single material containing different phases.
+
+    .. impl:: Materials can be defined in custom YAML files.
+        :id: I_ARMI_MAT_YAML
+        :implements: R_ARMI_MAT_YAML
+
+        The ARMI matProps package can build a MatPropsMaterial object from a custom YAML format. This file format is
+        flexible and extensible. It is designed around the idea that mostly what scientists and engineers want from a
+        material in software is the ability to define it in terms of nuclide fractions and properties. In particular,
+        the most work in this code is to allow users to define material properties (like density) using simple
+        mathematical syntax or tabular data.
+    """
+
+    validFileFormatVersions = [3.0, "TESTS"]
+    YAML_PATH = None
+
+    def __init__(self, yamlPath=None):
+        """Constructor for MatPropsMaterial class."""
+        self._saved = False
+        """Boolean denoting whether or not MatPropsMaterial object is saved in materials dict."""
+
+        self.materialType = None
+        """Enum represting type for the MatPropsMaterial object"""
+
+        self.composition = []
+        """List of Constituent objects representing composition of MatPropsMaterial."""
+
+        self.name = None
+        """Name of MatPropsMaterial object."""
+
+        self._sha1 = None
+        """SHA1 value of parsed material file."""
+
+        if yamlPath:
+            self.YAML_PATH = yamlPath
+
+        # Load the material, if the YAML was provided.
+        if self.YAML_PATH:
+            self.loadFile(self.YAML_PATH)
+
+    def __repr__(self):
+        """Provides string representation for MatPropsMaterial class."""
+        return f"<MatPropsMaterial {self.name} {str(self.materialType)}>"
+
+    def hash(self) -> str:
+        """Returns the SHA1 hash value of a MatPropsMaterial instance."""
+        return self._sha1
+
+    def saved(self) -> bool:
+        """
+        Returns a bool value indicating whether the MatPropsMaterial has been stored internally in the
+        matProps.materials map via matProps.addMaterial().
+        """
+        return self._saved
+
+    def save(self):
+        """Sets MatPropsMaterial._saved flag to True."""
+        self._saved = True
+
+    @staticmethod
+    def dataCheckMaterialFile(filePath, rootNode):
+        """
+        A partial data check of the material data file.
+
+        Checks the first level of data keywords and also check that the file format is a valid version.
+
+        Parameters
+        ----------
+        filePath: str
+            Path containing name of YAML file whose file format and property nodes are checked.
+        rootNode: dict
+            Root YAML node of file parsed from filePath.
+        """
+        file_format = MatPropsMaterial.getNode(rootNode, "file format")
+        if file_format not in MatPropsMaterial.validFileFormatVersions:
+            msg = f"Invalid file format version `{file_format}` used in: {filePath}"
+            raise ValueError(msg)
+
+        for propName in rootNode:
+            if propName in {"composition", "material type", "file format"}:
+                continue
+
+            if not prop.contains(propName):
+                msg = f"Invalid property node `{propName}` found in: {filePath}"
+                raise KeyError(msg)
+
+    @staticmethod
+    def getValidFileFormatVersions():
+        """Get a vector of strings with all of the valid file format versions."""
+        return MatPropsMaterial.validFileFormatVersions
+
+    @staticmethod
+    def getNode(node: dict, subnodeName: str):
+        """
+        Searches a node for a child element and returns it.
+
+        Parameters
+        ----------
+        node: dict
+            Parent level node from which a child element is searched.
+        subnodeName: str
+            Name of the child element that is queried from node.
+        """
+        if subnodeName not in node:
+            msg = f"Missing YAML node `{subnodeName}`"
+            raise KeyError(msg)
+
+        return node[subnodeName]
+
+    def loadNode(self, node: dict):
+        """
+        Loads YAML and parses information to fill in material data members including all relevant Function objects.
+
+        Parameters
+        ----------
+        node: dict
+            MatPropsMaterial definition, like a dict that is loaded from a YAML file.
+        """
+        self.materialType = MaterialType.fromString(self.getNode(node, "material type"))
+        self.composition = Constituent.parseComposition(self.getNode(node, "composition"))
+
+        for p in prop.properties:
+            if p.name and p.name in node:
+                setattr(self, p.symbol, Function._factory(self, node[p.name], p))
+            else:
+                # Any property not in the input file will be set to None.
+                setattr(self, p.symbol, None)
+
+    @staticmethod
+    def getMatNameFromYamlPath(yamlPath):
+        """Grab the material name from the file name."""
+        n = Path(yamlPath).name
+        if n.lower().endswith(".yaml"):
+            n = n[:-5]
+        elif n.lower().endswith(".yml"):
+            n = n[:-4]
+
+        return n
+
+    def loadFile(self, yamlPath: str):
+        """
+        Loads YAML file and parses information to fill in MatPropsMaterial data members including all relevant Function
+        objects.
+
+        Parameters
+        ----------
+        yamlPath: str
+            Path containing name of YAML file to parse.
+        """
+        # Set class attr
+        self.YAML_PATH = yamlPath
+        # load the file path
+        y = YAML(pure=True)
+        node = y.load(Path(yamlPath))
+
+        # grab the material name from the file name
+        self.name = MatPropsMaterial.getMatNameFromYamlPath(yamlPath)
+
+        # Generate SHA1 value and set data member
+        sha1 = hashlib.sha1()
+        with open(yamlPath, "rb") as materialFile:
+            sha1.update(materialFile.read())
+        self._sha1 = sha1.hexdigest()
+
+        # build the material, from the file
+        self.dataCheckMaterialFile(yamlPath, node)
+        self.loadNode(node)

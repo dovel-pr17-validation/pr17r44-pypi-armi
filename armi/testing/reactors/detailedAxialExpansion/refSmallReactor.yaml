@@ -1,0 +1,28 @@
+!include refSmallReactorBase.yaml
+systems:
+    core:
+        grid name: core
+        origin:
+            x: 0.0
+            y: 0.0
+            z: 0.0
+    sfp:
+        type: sfp
+        grid name: sfp
+        origin:
+            x: 5000.0
+            y: 5000.0
+            z: 6000.0
+grids:
+    !include refSmallCoreGrid.yaml
+    sfp:
+        symmetry: full
+        geom: cartesian
+        lattice pitch:
+            x: 50.0
+            y: 50.0
+        grid contents:
+            [0,0]: MC
+            [1,0]: MC
+            [0,1]: MC
+            [1,1]: MC

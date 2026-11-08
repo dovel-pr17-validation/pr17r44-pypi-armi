@@ -1,0 +1,355 @@
+# Copyright 2019 TerraPower, LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import glob
+import os
+import pathlib
+import random
+import shutil
+import string
+
+from armi import context, runLog
+from armi.utils import pathTools, safeCopy, safeMove
+
+
+def _changeDirectory(destination):
+    if os.path.exists(destination):
+        os.chdir(destination)
+    else:
+        raise IOError("Cannot change directory to non-existent location: {}".format(destination))
+
+
+class DirectoryChanger:
+    r"""
+    Utility to change directory.
+
+    Use with 'with' statements to execute code in a different dir, guaranteeing a clean
+    return to the original directory
+
+    >>> with DirectoryChanger('C:\\whatever')
+    ...     pass
+
+    Parameters
+    ----------
+    destination : str
+        Path of directory to change into
+    filesToMove : list of str, optional
+        Filenames to bring from the CWD into the destination
+    filesToRetrieve : list of str, optional
+        Filenames to bring back from the destination to the cwd. Note that if any of these
+        files do not exist then the file will be skipped and a warning will be provided.
+    dumpOnException : bool, optional
+        Flag to tell system to retrieve the entire directory if an exception is raised within a the
+        context manager.
+    outputPath : str, optional
+        Output path for filesToRetrieve. If None, default is the initial working directory from
+        which the DirectoryChanger is called.
+    """
+
+    def __init__(
+        self,
+        destination,
+        filesToMove=None,
+        filesToRetrieve=None,
+        dumpOnException=True,
+        outputPath=None,
+    ):
+        """Establish the new and return directories."""
+        self.initial = pathTools.armiAbsPath(os.getcwd())
+        self.destination = None
+        self.outputPath = None
+        if destination is not None:
+            self.destination = pathTools.armiAbsPath(destination)
+        if outputPath is not None:
+            self.outputPath = pathTools.armiAbsPath(outputPath)
+        else:
+            self.outputPath = self.initial
+        self._filesToMove = filesToMove or []
+        self._filesToRetrieve = filesToRetrieve or []
+        self._dumpOnException = dumpOnException
+
+    def __enter__(self):
+        """At the inception of a with command, navigate to a new directory if one is supplied."""
+        runLog.debug("Changing directory to {}".format(self.destination))
+        self.moveFiles()
+        self.open()
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        """At the termination of a with command, navigate back to the original directory."""
+        runLog.debug("Returning to directory {}".format(self.initial))
+        self._createOutputDirectory()
+        if exc_type is not None and self._dumpOnException:
+            runLog.info("An exception was raised within a DirectoryChanger. Retrieving entire folder for debugging.")
+            self._retrieveEntireFolder()
+        else:
+            self.retrieveFiles()
+        self.close()
+
+    def __repr__(self):
+        """Print the initial and destination paths."""
+        return "<{} {} to {}>".format(self.__class__.__name__, self.initial, self.destination)
+
+    def open(self):
+        """
+        User requested open, used to stalling the close from a with statement.
+
+        This method has been made for old uses of :code:`os.chdir()` and is not
+        recommended.  Please use the with statements
+        """
+        if self.destination:
+            _changeDirectory(self.destination)
+
+    def close(self):
+        """User requested close."""
+        if self.initial != os.getcwd():
+            _changeDirectory(self.initial)
+
+    def moveFiles(self):
+        """Copy ``filesToMove`` into the destination directory on entry."""
+        initialPath = self.initial
+        destinationPath = self.destination
+        self._transferFiles(initialPath, destinationPath, self._filesToMove, moveFiles=False)
+        if self.outputPath != self.initial:
+            destinationPath = self.outputPath
+            self._transferFiles(initialPath, destinationPath, self._filesToMove, moveFiles=False)
+
+    def retrieveFiles(self):
+        """Copy ``filesToRetrieve`` back into the initial directory on exit."""
+        if self.outputPath != self.initial:
+            self._transferFiles(
+                self.destination,
+                self.outputPath,
+                self._filesToRetrieve,
+                moveFiles=False,
+            )
+        self._transferFiles(self.destination, self.initial, self._filesToRetrieve, moveFiles=True)
+
+    def _retrieveEntireFolder(self):
+        """
+        Retrieve all files to a dump directory.
+
+        This is used when an exception is caught by the DirectoryChanger to rescue the
+        entire directory to aid in debugging. Typically this is only called if
+        ``dumpOnException`` is True.
+        """
+        folderName = os.path.split(self.destination)[1]
+        recoveryPath = os.path.join(self.initial, f"dump-{folderName}")
+        shutil.copytree(self.destination, recoveryPath)
+
+    def _createOutputDirectory(self):
+        if self.outputPath == self.initial:
+            return
+        if not os.path.exists(self.outputPath):
+            runLog.extra(f"Creating output folder: {self.outputPath}")
+            try:
+                os.makedirs(self.outputPath)
+            except OSError as ee:
+                # even though we checked exists, this still fails
+                # sometimes when multiple MPI nodes try
+                # to make the dirs due to I/O delays
+                runLog.error(f"Failed to make output folder: {self.outputPath}. Exception: {ee}")
+        else:
+            runLog.extra(f"Output folder already exists: {self.outputPath}")
+
+    @staticmethod
+    def _transferFiles(initialPath, destinationPath, fileList, moveFiles=False):
+        """
+        Transfer files into or out of the directory.
+
+        This is used in ``moveFiles`` and ``retrieveFiles`` to shuffle files about when creating a
+        target directory or when coming back, respectively.
+
+        Parameters
+        ----------
+        initialPath : str
+            Path to the folder to find files in.
+        destinationPath: str
+            Path to the folder to move file to.
+        fileList : list of str or list of tuple
+            File names to move from initial to destination. If this is a simple list of strings, the
+            files will be transferred. Alternatively tuples of (initialName, finalName) are allowed
+            if you want the file renamed during transit. In the non-tuple option, globs/wildcards
+            are allowed.
+        moveFiles: bool, optional
+            Controls whether the files are "moved" (``mv``) or "copied" (``cp``)
+
+        Warning
+        -------
+        On Windows the max number of characters in a path is 260.
+        If you exceed this you will see FileNotFound errors here.
+        """
+        if not fileList:
+            return
+
+        if not os.path.exists(destinationPath):
+            os.makedirs(destinationPath)
+
+        for pattern in fileList:
+            if isinstance(pattern, tuple):
+                # allow renames in transit
+                fromName, destName = pattern
+                copies = [(fromName, destName)]
+            else:
+                # expand globs if they're given
+                copies = []
+                for ff in glob.glob(pattern):
+                    # renaming not allowed with globs
+                    copies.append((ff, ff))
+
+            for fromName, destName in copies:
+                fromPath = os.path.join(initialPath, fromName)
+                if not os.path.exists(fromPath):
+                    runLog.extra(f"{fromPath} does not exist and will not be copied.")
+                    continue
+
+                toPath = os.path.join(destinationPath, destName)
+                if moveFiles:
+                    runLog.debug(f"Moving {fromPath} to {toPath}")
+                    safeMove(fromPath, toPath)
+                else:
+                    runLog.debug(f"Copying {fromPath} to {toPath}")
+                    safeCopy(fromPath, toPath)
+
+
+class TemporaryDirectoryChanger(DirectoryChanger):
+    """
+    Create a temporary directory, change into it, and if there is no error/exception generated when using a
+    :code:`with` statement, delete the directory.
+
+    Notes
+    -----
+    If there is an error/exception generated while in a :code:`with` statement, the temporary directory contents will
+    be copied to the original directory and then the temporary directory will be deleted.
+
+    There is the ability for a user to set the environment variable ARMI_TEMP_ROOT_PATH, which will globally override
+    the `root` argument being passed in. This is a useful tool for running code or tests in a read-only environment.
+    """
+
+    def __init__(
+        self,
+        root=None,
+        filesToMove=None,
+        filesToRetrieve=None,
+        dumpOnException=True,
+        outputPath=None,
+    ):
+        DirectoryChanger.__init__(
+            self,
+            root,
+            filesToMove,
+            filesToRetrieve,
+            dumpOnException,
+            outputPath,
+        )
+
+        # If an application sets this environment variable, all root args in all `TempDirChanger` uses are overriden
+        # with a different root path. This is useful for running unit tests in a read-only environment.
+        if os.environ.get("ARMI_TEMP_ROOT_PATH"):
+            root = os.environ["ARMI_TEMP_ROOT_PATH"]
+
+        # If no root dir is given, the default path comes from context.getFastPath, which *might* be relative to the
+        # cwd, making it possible to delete unintended files. So this check is here to ensure that if we grab a path
+        # from context, it is a proper temp dir. That said, since the TemporaryDirectoryChanger *always* responsible for
+        # creating its destination directory, it may always be safe to delete it regardless of location.
+        if root is None:
+            root = context.getFastPath()
+            # ARMIs temp dirs are in an context.APP_DATA directory: validate this is a temp dir.
+            if pathlib.Path(context.APP_DATA) not in pathlib.Path(root).parents:
+                raise ValueError("Temporary directory not in a safe location for deletion.")
+
+        # make the tmp dir, if necessary
+        if not os.path.exists(root):
+            try:
+                os.makedirs(root)
+            except FileExistsError:
+                # ignore the obvious race condition
+                pass
+
+        # init the important path attributes
+        self.initial = os.path.abspath(os.getcwd())
+        self.destination = TemporaryDirectoryChanger.GetRandomDirectory(root)
+        while os.path.exists(self.destination):
+            self.destination = TemporaryDirectoryChanger.GetRandomDirectory(root)
+
+    @classmethod
+    def GetRandomDirectory(cls, root):
+        return os.path.join(
+            root,
+            "temp-" + "".join(random.choice(string.ascii_letters + string.digits) for _ in range(10)),
+        )
+
+    def __enter__(self):
+        os.makedirs(self.destination)
+        return DirectoryChanger.__enter__(self)
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        DirectoryChanger.__exit__(self, exc_type, exc_value, traceback)
+        try:
+            pathTools.cleanPath(self.destination, mpiRank=context.MPI_RANK, forceClean=True)
+        except PermissionError:
+            if context.PLATFORM == context.Platform.WINDOWS:
+                runLog.warning(
+                    "There is an issue where Windows will not agree to delete private directories. That is, if you "
+                    "create a directory with a name starting with a period, the TempDirChanger will not be able to "
+                    "clean it (for instance, a '.git' dir)."
+                )
+
+
+class ForcedCreationDirectoryChanger(DirectoryChanger):
+    """Creates the directory tree necessary to reach your desired destination."""
+
+    def __init__(
+        self,
+        destination,
+        filesToMove=None,
+        filesToRetrieve=None,
+        dumpOnException=True,
+        outputPath=None,
+    ):
+        if not destination:
+            raise ValueError("A destination directory must be provided.")
+        DirectoryChanger.__init__(
+            self,
+            destination,
+            filesToMove,
+            filesToRetrieve,
+            dumpOnException,
+            outputPath,
+        )
+
+    def __enter__(self):
+        if not os.path.exists(self.destination):
+            runLog.extra(f"Creating destination folder: {self.destination}")
+            try:
+                os.makedirs(self.destination)
+            except OSError as ee:
+                # even though we checked exists, this still fails
+                # sometimes when multiple MPI nodes try
+                # to make the dirs due to I/O delays
+                runLog.error(f"Failed to make destination folder: {self.destination}. Exception: {ee}")
+        else:
+            runLog.extra(f"Destination folder already exists: {self.destination}")
+        DirectoryChanger.__enter__(self)
+
+        return self
+
+
+def directoryChangerFactory():
+    if context.MPI_SIZE > 1:
+        from armi.utils.directoryChangersMpi import MpiDirectoryChanger
+
+        return MpiDirectoryChanger
+    else:
+        return DirectoryChanger

@@ -1,0 +1,174 @@
+# Copyright 2019 TerraPower, LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""
+Boron carbide; a very typical reactor control material.
+
+Note that this material defaults to a theoretical density fraction of 0.9, reflecting the difficulty of producing B4C at
+100% theoretical density in real life. To get different fraction, use the `TD_frac` material modification in your
+assembly definition.
+
+This is an example of a material implement purely in Python, without any matProps YAML inputs.
+"""
+
+from armi.materials import material
+from armi.utils.units import getTc
+
+
+class B4C(material.Material):
+    DEFAULT_MASS_DENSITY = 2.52
+    DEFAULT_THEORETICAL_DENSITY_FRAC = 0.90
+    enrichedNuclide = "B10"
+    NATURAL_B10_NUM_FRAC = 0.199
+    propertyValidTemperature = {"linear expansion percent": ((25, 600), "C")}
+
+    def __init__(self):
+        self.b10NumFrac = self.NATURAL_B10_NUM_FRAC
+        super().__init__()
+
+    def applyInputParams(self, B10_wt_frac=None, TD_frac=None, *args, **kwargs):
+        if B10_wt_frac is not None:
+            # We can not just use the generic enrichment adjustment here because the carbon has to change with enrich.
+            self.adjustMassEnrichment(B10_wt_frac)
+
+        if TD_frac is not None:
+            self.updateTD(TD_frac)
+
+    def updateTD(self, td: float) -> None:
+        self.theoreticalDensityFrac = td
+        self.clearCache()
+
+    def setNewMassFracsFromMassEnrich(self, massEnrichment):
+        """
+        Calculate the mass fractions for a given  mass enrichment and set it on any parent.
+
+        Parameters
+        ----------
+        massEnrichment : float
+            The mass enrichment as a fraction.
+
+        Returns
+        -------
+        boron10MassGrams, boron11MassGrams, carbonMassGrams : float
+            The resulting mass of each nuclide/element
+
+        Notes
+        -----
+        B-10: 10.012 g/mol
+        B-11: 11.009 g/mol
+        Carbon:  12.0107 g/mol
+
+        4 moles of boron/1 mole of carbon
+
+        grams of boron-10 = 10.012 g/mol* 4 mol * 0.199   =  7.969552 g
+        grams of boron-11 = 11.009 g/mol* 4 mol * 0.801   = 35.272836 g
+        grams of carbon= 12.0107 g/mol * 1 mol = 12.0107 g
+
+        from number enrichment mi:
+        mB10 = nB10*AB10 /(nB10*AB10 + nB11*AB11)
+        """
+        if massEnrichment < 0 or massEnrichment > 1:
+            raise ValueError(f"massEnrichment {massEnrichment} is unphysical for B4C")
+
+        nb = self.parent.nuclideBases if self.parent else None
+        if nb is None:
+            b10AtomicMass = 10.01293728
+            b11AtomicMass = 11.0093054803
+            cAtomicMass = 12.011137118560828
+        else:
+            b10AtomicMass = nb.byName["B10"].weight
+            b11AtomicMass = nb.byName["B11"].weight
+            cAtomicMass = nb.byName["C"].weight
+
+        b10NumEnrich = (massEnrichment / b10AtomicMass) / (
+            massEnrichment / b10AtomicMass + (1 - massEnrichment) / b11AtomicMass
+        )
+        b11NumEnrich = 1.0 - b10NumEnrich
+
+        boron10MassGrams = b10AtomicMass * b10NumEnrich * 4.0
+        boron11MassGrams = b11AtomicMass * b11NumEnrich * 4.0
+        carbonMassGrams = cAtomicMass
+
+        gTotal = boron10MassGrams + boron11MassGrams + carbonMassGrams
+
+        boron10MassGrams /= gTotal
+        boron11MassGrams /= gTotal
+        carbonMassGrams /= gTotal
+        if self.parent:
+            self.parent.setMassFracs({"B10": boron10MassGrams, "B11": boron11MassGrams, "C": carbonMassGrams})
+
+        return boron10MassGrams, boron11MassGrams, carbonMassGrams
+
+    def setDefaultMassFracs(self) -> None:
+        """B4C mass fractions. Using Natural B4C. 19.9% B-10/ 80.1% B-11
+        Boron: 10.811 g/mol
+        Carbon:  12.0107 g/mol.
+
+        4 moles of boron/1 mole of carbon
+
+        grams of boron-10 = 10.01 g/mol* 4 mol * 0.199   =  7.96796 g
+        grams of boron-11 = 11.01 g/mol* 4 mol * 0.801   = 35.27604 g
+        grams of carbon= 12.0107 g/mol * 1 mol = 12.0107 g
+
+        total=55.2547 g.
+        Mass fractions are computed from this.
+        """
+        nb = self.parent.nuclideBases if self.parent else None
+        if nb is None:
+            b10AtomicMass = 10.01293728
+            b11AtomicMass = 11.0093054803
+        else:
+            b10AtomicMass = nb.byName["B10"].weight
+            b11AtomicMass = nb.byName["B11"].weight
+
+        massEnrich = self.getMassEnrichmentFromNumEnrich(self.b10NumFrac, b10AtomicMass, b11AtomicMass)
+
+        gBoron10, gBoron11, gCarbon = self.setNewMassFracsFromMassEnrich(massEnrichment=massEnrich)
+        self.setMassFrac("B10", gBoron10)
+        self.setMassFrac("B11", gBoron11)
+        self.setMassFrac("C", gCarbon)
+        self.refDens = self.DEFAULT_MASS_DENSITY
+        # TD reference : Dunner, Heuvel, "Absorber Materials for control rod systems of fast breeder reactors"
+        # Journal of nuclear materials, 124, 185-194, (1984)."
+        self.theoreticalDensityFrac = self.DEFAULT_THEORETICAL_DENSITY_FRAC  # normally is around 0.88-93.
+
+    @staticmethod
+    def getMassEnrichmentFromNumEnrich(
+        b10NumFrac: float, b10AtomicMass: float = None, b11AtomicMass: float = None
+    ) -> float:
+        """Given a B10 number fraction, give the B10 weight fraction."""
+        if b10AtomicMass is None:
+            b10AtomicMass = 10.01293728
+        if b11AtomicMass is None:
+            b11AtomicMass = 11.0093054803
+
+        return b10NumFrac * b10AtomicMass / (b10NumFrac * b10AtomicMass + (1.0 - b10NumFrac) * b11AtomicMass)
+
+    def density(self, Tk: float = None, Tc: float = None) -> float:
+        """
+        Return density that preserves mass when thermally expanded in 3D.
+
+        Notes
+        -----
+        Applies theoretical density of B4C to parent method
+        """
+        return material.Material.density(self, Tk, Tc) * self.theoreticalDensityFrac
+
+    def linearExpansionPercent(self, Tk: float = None, Tc: float = None) -> float:
+        """Boron carbide expansion. Very preliminary."""
+        Tc = getTc(Tc, Tk)
+        self.checkPropertyTempRange("linear expansion percent", Tc)
+        deltaT = Tc - 25
+        dLL = deltaT * 4.5e-6
+        return dLL * 100

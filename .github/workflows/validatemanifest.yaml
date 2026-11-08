@@ -1,0 +1,24 @@
+name: Validate Manifest
+
+permissions:
+  contents: read
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Validate Manifest
+        run: |
+          pip install toml
+          python .github/workflows/validatemanifest.py
